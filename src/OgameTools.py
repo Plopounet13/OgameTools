@@ -1,6 +1,7 @@
 import json
 from jsonschema import validate
 import numpy as np
+from enum import Enum
 
 class Universe:
     universe_schema = {
@@ -40,32 +41,9 @@ def ressource2value(res):
     return res[0] + 1.5 * res[1] + 3 * res[2]
 
 
-def metal_cost(lvl):
-    return [60 * 1.5**(lvl-1), 15 * 1.5**(lvl-1), 0]
-
-
-def crystal_cost(lvl):
-    return [48 * 1.5**(lvl-1), 24 * 1.5**(lvl-1), 0]
-
-
-def deut_cost(lvl):
-    return [225 * 1.5**(lvl-1), 75 * 1.5**(lvl-1), 0]
-
-
 def energy_cost(lvl):
     return [75 * 1.5**(lvl-1), 30 * 1.5**(lvl-1), 0]
 
-
-def metal_energy(lvl):
-    return int(10*lvl*1.1**lvl)
-
-
-def crystal_energy(lvl):
-    return int(10*lvl*1.1**lvl)
-
-
-def deut_energy(lvl):
-    return int(20*lvl*1.1**lvl)
 
 
 class Research:
@@ -89,7 +67,7 @@ class Research:
 
 
 class Player:
-    def __init__(self, player_class):
+    def __init__(self, player_class="None"):
         self.player_class = player_class
         self.mine_bonus = 0.0
         self.energy_bonus = 0.0
@@ -100,10 +78,7 @@ class Player:
 
 class Boost:
     def __init__(self, metal=0.0, crystal=0.0, deut=0.0, energy=0.0):
-        self.metal = metal
-        self.crystal = crystal
-        self.deut = deut
-        self.energy = energy
+        self.stats = [metal, crystal, deut, energy]
 
 
 bronze_metal_booster = Boost(metal=0.1)
@@ -114,42 +89,105 @@ engineer = Boost(energy=0.1)
 geologist = Boost(metal=0.1, crystal=0.1, deut=0.1)
 commanding_staff = Boost(metal=0.02, crystal=0.02, deut=0.02)
 
+
+def get_base_deut_from_temp(temp):
+    return np.array([0.0, 0.0, 20]) * (0.68 - 0.002 * temp)
+
+
+class Resources(Enum):
+    METAL = 0
+    CRYSTAL = 1
+    DEUTERIUM = 2
+    ENERGY = 4
+
+
+class Mine:
+    all_cost=[[60, 15, 0], [48, 24, 0], [225, 75, 0]]
+    all_base = [[30.0, 0.0, 0.0], [0.0, 15.0, 0.0], [0.0, 0.0, 0.0]]
+    all_prod_base = [[30.0, 0.0, 0.0], [0.0, 20.0, 0.0], [0.0, 0.0, 20.0]]
+    all_plasma = [0.01, 0.0066, 0.0033]
+    all_energy = [10.0, 10.0, 20.0]
+
+    def __init__(self, planet, lvl=0, resource=Resources.METAL):
+        self.lvl = lvl
+        self.planet = planet
+        self.resource = resource
+        self.planet_bonus = 0
+        if self.resource == Resources.METAL:
+            self.planet_bonus = self.planet.metal_bonus
+        elif self.resource == Resources.CRYSTAL:
+            self.planet_bonus = self.planet.crystal_bonus
+        self.base = np.array(Mine.all_base[self.resource.value]) * (1 + self.planet_bonus) * self.planet.universe.data["economySpeed"]
+        self.base_prod = np.array(Mine.all_prod_base[self.resource.value]) * (1 + self.planet_bonus) * self.planet.universe.data["economySpeed"]
+        self.base_cost = np.array(Mine.all_cost[self.resource.value])
+        self.base_energy = Mine.all_energy[self.resource.value]
+        if self.resource == Resources.DEUTERIUM:
+            self.base_prod *= (0.68 - 0.002 * planet.temp)
+
+    def energy(self, lvl=None):
+        if lvl is None:
+            lvl = self.lvl
+        return self.base_energy * lvl * 1.1 ** lvl
+
+    def cost(self, lvl=None):
+        if lvl is None:
+            lvl = self.lvl
+        return self.base_cost * lvl * 1.5**lvl
+
+    def prod(self, lvl=None):
+        if lvl is None:
+            lvl = self.lvl
+        return self.base_prod * lvl * 1.1**lvl
+
+    def plasma(self, lvl=None):
+        if lvl is None:
+            lvl = self.lvl
+        return self.prod(lvl) * (Mine.all_plasma[self.resource.value] * self.planet.research.plasma)
+
+    def boost(self, lvl=None):
+        if lvl is None:
+            lvl = self.lvl
+        res = 0
+        for b in self.planet.boosts:
+            res += b.stats[self.resource.value]
+        return self.prod(lvl) * res
+
+    def class_boost(self, lvl=None):
+        if lvl is None:
+            lvl = self.lvl
+        return self.planet.player.mine_bonus * self.prod(lvl)
+
+    def total(self, lvl=None):
+        if lvl is None:
+            lvl = self.lvl
+        return self.base + self.prod(lvl) + self.plasma(lvl) + self.boost(lvl) + self.class_boost(lvl)
+
+
+
 class Planet:
-    metal_bonus = 16*[1.0]
-    metal_bonus[8] = 1.35
-    metal_bonus[7] = metal_bonus[9] = 1.23
-    metal_bonus[6] = metal_bonus[10] = 1.17
+    metal_bonuses = 16*[0.0]
+    metal_bonuses[8] = 0.35
+    metal_bonuses[7] = metal_bonuses[9] = 0.23
+    metal_bonuses[6] = metal_bonuses[10] = 0.17
 
-    crystal_bonus = 16*[0.0]
-    crystal_bonus[1] = 0.4
-    crystal_bonus[2] = 0.3
-    crystal_bonus[3] = 0.2
+    crystal_bonuses = 16*[0.0]
+    crystal_bonuses[1] = 0.4
+    crystal_bonuses[2] = 0.3
+    crystal_bonuses[3] = 0.2
 
-    def __init__(self, uni, player, pos, temp, size, research, boosts):
+    def __init__(self, player=Player(), uni=Universe(), research=Research(), pos=8, temp=0, size=200, boosts=None):
+        if boosts is None:
+            boosts = []
+        self.player = player
         self.boosts = boosts
         self.research = research
-        self.uni = uni
+        self.universe = uni
         self.pos = pos
         self.temp = temp
         self.size = size
-        self.metal_factor = 1 + 0.01 * research.plasma + player.mine_bonus
-        self.crystal_factor = 1 + 0.0066 * research.plasma + player.mine_bonus + self.crystal_bonus[pos]
-        self.deut_factor = 1 + 0.0033 * research.plasma + player.mine_bonus
-        self.energy_factor = 20.0
-        for b in self.boosts:
-            self.crystal_factor += b.crystal
-            self.metal_factor += b.metal
-            self.deut_factor += b.deut
-            self.energy_factor += b.energy
+        self.metal_bonus = Planet.metal_bonuses[self.pos]
+        self.crystal_bonus = Planet.crystal_bonuses[self.pos]
 
-    def base_metal(self):
-        return np.array([30., 0.0, 0.0]) * self.metal_bonus[self.pos] * self.uni.data["economySpeed"]
-
-    def metal_prod(self, lvl):
-        return self.base_metal() * (1 + self.metal_factor * lvl * 1.1**lvl)
-
-    def crystal_prod(self, lvl):
-        return np.array([0.0, 20, 0.0]) * self.uni.data["economySpeed"] * self.crystal_factor * lvl * 1.1**lvl
-
-    def deut_prod(self, lvl):
-        return np.array([0.0, 0.0, 20]) * self.uni.data["economySpeed"] * (0.68 - 0.002 * self.temp) * self.deut_factor * lvl * 1.1**lvl
+        self.metal_mine = Mine(self, 0, Resources.METAL)
+        self.crystal_mine = Mine(self, 0, Resources.CRYSTAL)
+        self.deuterium_synt = Mine(self, 0, Resources.DEUTERIUM)
